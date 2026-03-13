@@ -11,6 +11,7 @@ import com.example.uberprojectentityservice.models.BookingStatus;
 import com.example.uberprojectentityservice.models.Driver;
 import com.example.uberprojectentityservice.models.Passenger;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import retrofit2.Call;
@@ -28,6 +29,7 @@ public class BookingServiceImpl implements BookingService{
     private final BookingRepository bookingRepository;
     private final DriverRepository driverRepository;
     private final RestTemplate restTemplate;
+    private final DriverMatchingService driverMatchingService;
 
 //    private static final String LOCATION_SERVICE = "http://localhost:7777";
 
@@ -35,13 +37,19 @@ public class BookingServiceImpl implements BookingService{
 
     private final UberSocketApi uberSocketApi;
 
-    public BookingServiceImpl(PassengerRepository passengerRepository, BookingRepository bookingRepository, LocationServiceApi locationServiceApi, DriverRepository driverRepository, UberSocketApi uberSocketApi) {
+    public BookingServiceImpl(PassengerRepository passengerRepository,
+                              BookingRepository bookingRepository,
+                              LocationServiceApi locationServiceApi,
+                              DriverRepository driverRepository,
+                              UberSocketApi uberSocketApi,
+                              DriverMatchingService driverMatchingService) {
         this.passengerRepository = passengerRepository;
         this.bookingRepository = bookingRepository;
         this.restTemplate = new RestTemplate();
         this.locationServiceApi = locationServiceApi;
         this.driverRepository = driverRepository;
         this.uberSocketApi = uberSocketApi;
+        this.driverMatchingService = driverMatchingService;
     }
 
     @Override
@@ -55,13 +63,15 @@ public class BookingServiceImpl implements BookingService{
                 .build();
         Booking newBooking = bookingRepository.save(booking);
 
-        NearByDriversRequestDto request = NearByDriversRequestDto
-                                        .builder()
-                                        .latitude(bookingDetails.getStartLocation().getLatitude())
-                                        .longitude(bookingDetails.getStartLocation().getLongitude())
-                                        .build();
+        driverMatchingService.findDriverAndNotify(newBooking, bookingDetails.getPassengerId());
 
-        processNearbyDriversAsync(request, bookingDetails.getPassengerId(), newBooking.getId());
+//        NearByDriversRequestDto request = NearByDriversRequestDto
+//                                        .builder()
+//                                        .latitude(bookingDetails.getStartLocation().getLatitude())
+//                                        .longitude(bookingDetails.getStartLocation().getLongitude())
+//                                        .build();
+//
+//        processNearbyDriversAsync(request, bookingDetails.getPassengerId(), newBooking.getId());
 //
 //        //make an api call to location service to fetch nearby drivers
 //         ResponseEntity<DriverLocationDto[]> result = restTemplate.postForEntity(LOCATION_SERVICE + "/api/location/nearby/drivers",request ,DriverLocationDto[].class);
@@ -77,6 +87,18 @@ public class BookingServiceImpl implements BookingService{
                 .bookingId(newBooking.getId())
                 .bookingStatus(newBooking.getBookingStatus().toString())
                 .build();
+    }
+
+    @Async("bookingTaskExecutor")
+    public void findDriverAndNotify(Booking booking, CreateBookingDto bookingDetails) {
+        System.out.println("Processing driver matching in thread: " + Thread.currentThread().getName());
+
+        NearByDriversRequestDto request =  NearByDriversRequestDto.builder()
+                .latitude(bookingDetails.getStartLocation().getLatitude())
+                .longitude(bookingDetails.getStartLocation().getLongitude())
+                .build();
+
+        processNearbyDriversAsync(request, bookingDetails.getPassengerId(), booking.getId());
     }
 
     @Override
