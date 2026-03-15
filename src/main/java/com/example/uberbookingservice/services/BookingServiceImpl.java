@@ -10,6 +10,7 @@ import com.example.uberprojectentityservice.models.Booking;
 import com.example.uberprojectentityservice.models.BookingStatus;
 import com.example.uberprojectentityservice.models.Driver;
 import com.example.uberprojectentityservice.models.Passenger;
+import jakarta.transaction.Transactional;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -89,71 +90,33 @@ public class BookingServiceImpl implements BookingService{
                 .build();
     }
 
-    @Async("bookingTaskExecutor")
-    public void findDriverAndNotify(Booking booking, CreateBookingDto bookingDetails) {
-        System.out.println("Processing driver matching in thread: " + Thread.currentThread().getName());
-
-        NearByDriversRequestDto request =  NearByDriversRequestDto.builder()
-                .latitude(bookingDetails.getStartLocation().getLatitude())
-                .longitude(bookingDetails.getStartLocation().getLongitude())
-                .build();
-
-        processNearbyDriversAsync(request, bookingDetails.getPassengerId(), booking.getId());
-    }
-
     @Override
+    @Transactional
     public UpdateBookingResponseDto updateBooking(UpdateBookingRequestDto bookingRequestDto, Long bookingId) {
-        Optional<Driver> driver = driverRepository.findById(bookingRequestDto.getDriverId().get());
+        Driver driver = driverRepository.findById(bookingRequestDto.getDriverId().get())
+                .orElseThrow(() -> new RuntimeException("Driver not found"));
         //Todo : if (driver.isPresent() && driver.get().isAvailable()
-        bookingRepository.updateBookingStatusAndDriverById(bookingId, BookingStatus.SCHEDULED, driver.get());
+        //bookingRepository.updateBookingStatusAndDriverById(bookingId, BookingStatus.SCHEDULED, driver.get());
         //Todo : driverRepository.update -> make it unavailable
-        Optional<Booking> booking = bookingRepository.findById(bookingId);
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (booking.getBookingStatus() != BookingStatus.ASSIGNING_DRIVER) {
+            throw new RuntimeException("This ride has already been accepted.");
+        }
+
+        if(!driver.getIsAvailable()) {
+            throw new RuntimeException("Driver is not available");
+        }
+
+        booking.setBookingStatus(BookingStatus.SCHEDULED);
+        booking.setDriver(driver);
+        bookingRepository.save(booking);
+
         return  UpdateBookingResponseDto.builder()
                 .bookingId(bookingId)
-                .status(booking.get().getBookingStatus())
-                .driver(Optional.ofNullable(booking.get().getDriver()))
+                .status(booking.getBookingStatus())
+                .driver(Optional.ofNullable(booking.getDriver()))
                 .build();
-    }
-
-    private void processNearbyDriversAsync(NearByDriversRequestDto requestDto, Long passengerId, Long bookingId) {
-        Call<DriverLocationDto[]> call = locationServiceApi.getNearbyDrivers(requestDto);
-
-        call.enqueue(new Callback<DriverLocationDto[]>() {
-            @Override
-            public void onResponse(Call<DriverLocationDto[]> call, Response<DriverLocationDto[]> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                     List<DriverLocationDto> driverLocations = Arrays.asList(response.body());
-                     driverLocations.forEach(driverLocationDto -> {
-                         System.out.println(driverLocationDto.getDriverId() + "" + "lat:" + driverLocationDto.getLatitude() + "long:" + driverLocationDto.getLongitude());
-                     });
-                    raiseRideRequestAsync(RideRequestDto.builder().passengerId(passengerId).bookingId(bookingId).build());
-                } else {
-                    System.out.println("Request failed" + response.message());
-                }
-            }
-            @Override
-            public void onFailure(Call<DriverLocationDto[]> call, Throwable t) {
-                t.printStackTrace();
-            }
-        });
-    }
-
-    private void raiseRideRequestAsync(RideRequestDto requestDto) {
-        Call<Boolean> call = uberSocketApi.raiseRideRequest(requestDto);
-        call.enqueue(new Callback<Boolean>() {
-            @Override
-            public void onResponse(Call<Boolean> call, Response<Boolean> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                    Boolean result = response.body();
-                    System.out.println("Driver response " + result.toString());
-                } else {
-                    System.out.println("Request failed" + response.message());
-                }
-            }
-            @Override
-            public void onFailure(Call<Boolean> call, Throwable t) {
-                t.printStackTrace();
-            }
-        });
     }
 }
